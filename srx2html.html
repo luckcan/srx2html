@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>SRX2HTML - The Juniper SRX policy rule to HTML file converter</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    table { 
+        border-collapse: collapse;
+        width: 100%;
+        margin-top: 20px;
+        width: 100%;
+        table-layout: auto;        /* 自動依內容調整欄寬（不是平均分配） */
+        word-wrap: break-word;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      vertical-align: top;
+      max-width: 100%;
+    }
+    th { background-color: #f2f2f2; }
+    td[contenteditable="true"] {
+        white-space: pre-wrap;
+    }
+    .status-no { background-color: #ffe5e5; }
+    input[type="file"] { margin-bottom: 10px; }
+    button { margin-top: 10px; padding: 6px 12px; }
+  </style>
+</head>
+<body>
+
+<h2>📂 SRX2HTML - The Juniper SRX policy rule to HTML file converter</h2>
+<input type="file" id="fileInput" accept=".conf" />
+<button onclick="downloadCSV()">下載 UTF-8 CSV</button>
+<div id="tableContainer"></div>
+
+<script>
+let headers = [
+  "from-zone",
+  "to-zone",
+  "source-address",
+  "destination-address",
+  "application",
+  "action",
+  "status",
+  "scheduler-name",
+  "description",
+  "policy name"
+];
+let data = [];
+
+document.getElementById("fileInput").addEventListener("change", function (e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function (event) {
+    const raw = event.target.result;
+    parseZonePolicies(raw);
+  };
+  reader.readAsText(file);
+});
+
+function formatField(text) {
+  return text.split(', ').map(v => v.trim()).join("\n");
+}
+
+function escapeCSV(cell) {
+  const wrapped = cell.split(', ').map(v => v.trim()).join("\n");
+  return `"${wrapped.replace(/"/g, '""')}"`;
+}
+
+function parseZonePolicies(text) {
+  data = [];
+  const zoneRegex = /from-zone(\s+\S+\s+)to-zone(\s+\S+\s*){([\s\S]*?}(?=\s*from-zone|\s*$))/g;
+  const policyRegex = /(?:(inactive):)?\s*policy\s+(\S+)\s*{([\s\S]*?})\s*}/gm;
+
+  let zoneMatch;
+  while ((zoneMatch = zoneRegex.exec(text)) !== null) {
+    const fromZone = zoneMatch[1];
+    const toZone = zoneMatch[2];
+    const zoneBody = zoneMatch[3];
+
+    let policyMatch;
+    while ((policyMatch = policyRegex.exec(zoneBody)) !== null) {
+      const isInactive = policyMatch[1] === "inactive";
+      const name = policyMatch[2];
+      const body = policyMatch[3];
+
+      const extract = (label) => {
+        const regex = new RegExp(label + "\\s+(\\[.*?\\]|[^;]+);");
+        const found = body.match(regex);
+        return found ? found[1].replace(/[\[\]]/g, '').trim().replace(/\s+/g, ', ') : "";
+      };
+
+      const source = extract("source-address");
+      const dest = extract("destination-address");
+      const app = extract("application");
+      const schedule = extract("scheduler-name");
+      const description = extract("description");
+     
+      const thenBlock = body.match(/then\s*{([\s\S]*?)}/);
+      let action = "deny";
+      if (thenBlock) {
+        const inner = thenBlock[1];
+        if (/permit\s*;/.test(inner)) action = "permit";
+        else if (/accept\s*;/.test(inner)) action = "permit";
+        else if (/deny\s*;/.test(inner)) action = "deny";
+      }
+
+      const status = isInactive ? "No" : "Yes";
+
+        data.push([
+            fromZone,
+            toZone,
+            source,
+            dest,
+            app,
+            action,
+            status,
+            schedule,
+            description,
+            name
+        ]);
+    }
+  }
+
+  renderTable();
+}
+
+function renderTable() {
+  const container = document.getElementById("tableContainer");
+  let html = "<table><thead><tr>";
+  headers.forEach(h => html += `<th>${h}</th>`);
+  html += "</tr></thead><tbody>";
+
+  const actionIndex = headers.indexOf("action");
+  
+  data.forEach((row, rowIndex) => {
+    const statusIndex = headers.indexOf("status");
+    const isInactive = row[statusIndex].trim().toLowerCase() === "no";
+    html += `<tr${isInactive ? ' class="status-no"' : ""}>`;
+    row.forEach((cell, colIndex) => {
+      // const editable = ["action", "status", "scheduler-name", "description"].includes(headers[colIndex]);
+      const editable = false;
+      const formatted = formatField(cell);
+      const isStatusNo = headers[colIndex] === "status" && cell.trim().toLowerCase() === "no";
+      const className = isStatusNo ? 'status-no' : '';
+      html += `<td class="${className}"${editable ? ` contenteditable="true" oninput="updateCell(${rowIndex}, ${colIndex}, this.innerText)"` : ""}>${formatted}</td>`;
+    });
+    html += "</tr>";
+  });
+
+  html += "</tbody></table>";
+  container.innerHTML = html;
+}
+
+function updateCell(row, col, value) {
+  data[row][col] = value;
+}
+
+function downloadCSV() {
+  const csv = "\uFEFF" + [
+    headers.map(escapeCSV).join(","),
+    ...data.map(row => row.map(escapeCSV).join(","))
+  ].join("\r\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "srx_policies.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+</script>
+
+</body>
+</html>
